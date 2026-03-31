@@ -409,7 +409,7 @@ export class GraphWebviewPanel {
       cursor: pointer;
       user-select: none;
       border: 1px solid transparent;
-      opacity: 0.45;
+      opacity: 0.55;
       transition: opacity 0.15s, border-color 0.15s;
     }
     .edge-pill.active {
@@ -541,7 +541,7 @@ export class GraphWebviewPanel {
   <div id="toolbar">
     <!-- Search -->
     <div class="toolbar-group">
-      <input id="search-input" type="text" placeholder="Search nodes..." spellcheck="false" />
+      <input id="search-input" type="text" placeholder="Search nodes..." spellcheck="false" aria-label="Search nodes" />
     </div>
 
     <div class="toolbar-separator"></div>
@@ -549,13 +549,13 @@ export class GraphWebviewPanel {
     <!-- Edge type pills -->
     <div class="toolbar-group" id="edge-pills">
       <span class="toolbar-label">Edges</span>
-      <span id="edge-CALLS" class="edge-pill active" style="color:#3fb950"><span class="pill-dot" style="background:#3fb950"></span>Calls</span>
-      <span id="edge-IMPORTS_FROM" class="edge-pill active" style="color:#f0883e"><span class="pill-dot" style="background:#f0883e"></span>Imports</span>
-      <span id="edge-INHERITS" class="edge-pill active" style="color:#d2a8ff"><span class="pill-dot" style="background:#d2a8ff"></span>Inherits</span>
-      <span id="edge-IMPLEMENTS" class="edge-pill active" style="color:#f9e2af"><span class="pill-dot" style="background:#f9e2af"></span>Implements</span>
-      <span id="edge-TESTED_BY" class="edge-pill active" style="color:#f38ba8"><span class="pill-dot" style="background:#f38ba8"></span>Tested</span>
-      <span id="edge-CONTAINS" class="edge-pill active" style="color:#8b949e"><span class="pill-dot" style="background:#8b949e"></span>Contains</span>
-      <span id="edge-DEPENDS_ON" class="edge-pill active" style="color:#fab387"><span class="pill-dot" style="background:#fab387"></span>Depends</span>
+      <span id="edge-CALLS" class="edge-pill active" style="color:#3fb950" role="button" tabindex="0" aria-pressed="true" aria-label="Toggle Calls edges" title="Toggle CALLS edges"><span class="pill-dot" style="background:#3fb950"></span>Calls</span>
+      <span id="edge-IMPORTS_FROM" class="edge-pill active" style="color:#f0883e" role="button" tabindex="0" aria-pressed="true" aria-label="Toggle Imports edges" title="Toggle IMPORTS_FROM edges"><span class="pill-dot" style="background:#f0883e"></span>Imports</span>
+      <span id="edge-INHERITS" class="edge-pill active" style="color:#d2a8ff" role="button" tabindex="0" aria-pressed="true" aria-label="Toggle Inherits edges" title="Toggle INHERITS edges"><span class="pill-dot" style="background:#d2a8ff"></span>Inherits</span>
+      <span id="edge-IMPLEMENTS" class="edge-pill active" style="color:#f9e2af" role="button" tabindex="0" aria-pressed="true" aria-label="Toggle Implements edges" title="Toggle IMPLEMENTS edges"><span class="pill-dot" style="background:#f9e2af"></span>Implements</span>
+      <span id="edge-TESTED_BY" class="edge-pill active" style="color:#f38ba8" role="button" tabindex="0" aria-pressed="true" aria-label="Toggle Tested edges" title="Toggle TESTED_BY edges"><span class="pill-dot" style="background:#f38ba8"></span>Tested</span>
+      <span id="edge-CONTAINS" class="edge-pill active" style="color:#8b949e" role="button" tabindex="0" aria-pressed="true" aria-label="Toggle Contains edges" title="Toggle CONTAINS edges"><span class="pill-dot" style="background:#8b949e"></span>Contains</span>
+      <span id="edge-DEPENDS_ON" class="edge-pill active" style="color:#fab387" role="button" tabindex="0" aria-pressed="true" aria-label="Toggle Depends edges" title="Toggle DEPENDS_ON edges"><span class="pill-dot" style="background:#fab387"></span>Depends</span>
     </div>
 
     <div class="toolbar-separator"></div>
@@ -563,7 +563,7 @@ export class GraphWebviewPanel {
     <!-- Depth slider -->
     <div class="toolbar-group">
       <span class="toolbar-label">Depth</span>
-      <input id="depth-slider" type="range" min="0" max="10" value="0" />
+      <input id="depth-slider" type="range" min="0" max="10" value="0" title="Filter to nodes within N hops of the selected node" />
       <span id="depth-value">All</span>
     </div>
 
@@ -577,15 +577,20 @@ export class GraphWebviewPanel {
     </div>
 
     <!-- Node count -->
-    <span id="node-count"></span>
+    <span id="node-count" aria-live="polite"></span>
     <span id="truncation-warning" style="display:none;color:var(--btn-bg);font-size:11px;margin-left:8px;cursor:pointer;" title="Increase codeReviewGraph.graph.maxNodes in settings"></span>
   </div>
 
   <!-- Graph -->
-  <div id="graph-area"></div>
+  <div id="graph-area">
+    <div id="empty-state" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;color:var(--fg);opacity:0.6">
+      <p style="font-size:16px;margin-bottom:12px">No graph data available</p>
+      <p style="font-size:13px">Run <strong>Code Graph: Build Graph</strong> from the Command Palette to get started.</p>
+    </div>
+  </div>
 
   <!-- Tooltip -->
-  <div id="tooltip"></div>
+  <div id="tooltip" role="tooltip" aria-live="polite"></div>
 
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
