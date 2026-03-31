@@ -324,6 +324,9 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   .filter-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; cursor: pointer; user-select: none; }
   .filter-item input { accent-color: #58a6ff; cursor: pointer; }
   marker { overflow: visible; }
+  g.node-g:focus { outline: none; }
+  g.node-g:focus-visible .node-shape { stroke: #58a6ff !important; stroke-width: 3 !important; }
+  g.node-g:focus-visible .glow-ring { stroke: #58a6ff !important; opacity: 0.6 !important; }
 </style>
 </head>
 <body>
@@ -563,6 +566,40 @@ function updateNodes() {
       showDetailPanel(d);
     })
     .call(d3.drag().on("start", dragS).on("drag", dragD).on("end", dragE));
+  enter.attr("tabindex", 0).attr("role", "button")
+    .attr("aria-label", function(d) { return d.kind + ": " + d.label; })
+    .on("keydown", function(ev, d) {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        if (d.kind === "File" && !ev.shiftKey) toggleCollapse(d.qualified_name);
+        showDetailPanel(d);
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        detailPanel.classList.remove("visible");
+        hideTooltip();
+      } else if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].indexOf(ev.key) !== -1) {
+        ev.preventDefault();
+        var vis = nodes.filter(function(n) { return !n._hidden; });
+        var best = null, bestDist = Infinity;
+        vis.forEach(function(n) {
+          if (n.qualified_name === d.qualified_name) return;
+          var dx = n.x - d.x, dy = n.y - d.y;
+          var dist = Math.sqrt(dx*dx + dy*dy);
+          var ok = false;
+          if (ev.key === "ArrowRight" && dx > 0 && Math.abs(dy) < Math.abs(dx)) ok = true;
+          if (ev.key === "ArrowLeft"  && dx < 0 && Math.abs(dy) < Math.abs(dx)) ok = true;
+          if (ev.key === "ArrowDown"  && dy > 0 && Math.abs(dx) < Math.abs(dy)) ok = true;
+          if (ev.key === "ArrowUp"    && dy < 0 && Math.abs(dx) < Math.abs(dy)) ok = true;
+          if (ok && dist < bestDist) { best = n; bestDist = dist; }
+        });
+        if (best) {
+          var target = nodeGroup.selectAll("g.node-g").filter(function(n) { return n.qualified_name === best.qualified_name; }).node();
+          if (target) target.focus();
+        }
+      }
+    })
+    .on("focus", function(ev, d) { highlightConnected(d, true); showTooltip(ev, d); })
+    .on("blur",  function(ev, d) { highlightConnected(d, false); hideTooltip(); });
   nodeSel = enter.merge(nodeSel);
   labelSel = labelGroup.selectAll("text.node-label").data(vis, function(d) { return d.qualified_name; });
   labelSel.exit().remove();
