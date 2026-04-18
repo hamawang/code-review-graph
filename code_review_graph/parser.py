@@ -209,6 +209,9 @@ _CLASS_TYPES: dict[str, list[str]] = {
     "julia": [
         "struct_definition", "abstract_definition", "module_definition",
     ],
+    # GDScript: inner classes use ``class Name:`` (class_definition); the
+    # file-level ``class_name Name`` gives the script itself an identity.
+    "gdscript": ["class_definition", "class_name_statement"],
 }
 
 _FUNCTION_TYPES: dict[str, list[str]] = {
@@ -262,6 +265,8 @@ _FUNCTION_TYPES: dict[str, list[str]] = {
         "function_definition",
         "macro_definition",
     ],
+    # GDScript: ``func name(args) -> ReturnType:`` — includes ``static func``.
+    "gdscript": ["function_definition"],
 }
 
 _IMPORT_TYPES: dict[str, list[str]] = {
@@ -302,6 +307,11 @@ _IMPORT_TYPES: dict[str, list[str]] = {
     "powershell": [],
     # Julia: import/using are import_statement nodes.
     "julia": ["import_statement", "using_statement"],
+    # GDScript has no ``import`` keyword. The closest analogue is
+    # ``extends OtherClass`` / ``extends "res://path.gd"``, which establishes
+    # a hard dependency on the parent script. preload()/load() calls remain
+    # as ordinary CALLS edges.
+    "gdscript": ["extends_statement"],
 }
 
 _CALL_TYPES: dict[str, list[str]] = {
@@ -344,6 +354,9 @@ _CALL_TYPES: dict[str, list[str]] = {
         "broadcast_call_expression",
         "macrocall_expression",
     ],
+    # GDScript: bare calls produce ``call``; ``obj.method()`` is an
+    # ``attribute`` node whose right-hand side is an ``attribute_call``.
+    "gdscript": ["call", "attribute_call"],
 }
 
 # Patterns that indicate a test function
@@ -5088,6 +5101,25 @@ class CodeParser:
                                     "utf-8", errors="replace",
                                 )
                                 imports.append(f"{module_name}.{imported}")
+        elif language == "gdscript":
+            # ``extends Node`` → type > identifier("Node")
+            # ``extends "res://path.gd"`` → string literal
+            # ``extends SomeClass.Nested`` → type node (keep full text)
+            for child in node.children:
+                if child.type == "type":
+                    txt = child.text.decode("utf-8", errors="replace").strip()
+                    if txt:
+                        imports.append(txt)
+                elif child.type == "string":
+                    val = child.text.decode("utf-8", errors="replace").strip("'\"")
+                    if val:
+                        imports.append(val)
+                elif child.type == "identifier":
+                    # Fallback: some grammar variants expose the parent type as
+                    # a bare identifier next to the ``extends`` keyword.
+                    txt = child.text.decode("utf-8", errors="replace")
+                    if txt and txt != "extends":
+                        imports.append(txt)
         else:
             # Fallback: just record the text
             imports.append(text)
