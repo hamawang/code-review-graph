@@ -331,11 +331,11 @@ class TestInjectClaudeMd:
 class TestInjectPlatformInstructionsFiltering:
     def test_all_writes_every_file(self, tmp_path):
         updated = inject_platform_instructions(tmp_path, target="all")
-        assert set(updated) == {"AGENTS.md", "GEMINI.md", ".cursorrules", ".windsurfrules", "QODER.md", ".kiro/steering/code-review-graph.md"}
+        assert set(updated) == {"AGENTS.md", "GEMINI.md", ".cursorrules", ".windsurfrules", "QODER.md", ".kiro/steering/code-review-graph.md", ".github/copilot-instructions.md"}
 
     def test_default_is_all(self, tmp_path):
         updated = inject_platform_instructions(tmp_path)
-        assert set(updated) == {"AGENTS.md", "GEMINI.md", ".cursorrules", ".windsurfrules", "QODER.md", ".kiro/steering/code-review-graph.md"}
+        assert set(updated) == {"AGENTS.md", "GEMINI.md", ".cursorrules", ".windsurfrules", "QODER.md", ".kiro/steering/code-review-graph.md", ".github/copilot-instructions.md"}
 
     def test_claude_writes_nothing(self, tmp_path):
         updated = inject_platform_instructions(tmp_path, target="claude")
@@ -990,7 +990,100 @@ class TestKiroPlatform:
         assert not config_path.exists()
 
 
-class TestDetectServeCommand:
+class TestCopilotPlatform:
+    """Tests for GitHub Copilot platform support."""
+
+    def test_copilot_platform_entry_exists(self):
+        """PLATFORMS dict has a 'copilot' key with correct metadata."""
+        assert "copilot" in PLATFORMS
+        copilot = PLATFORMS["copilot"]
+        assert copilot["name"] == "GitHub Copilot"
+        assert copilot["key"] == "servers"
+        assert copilot["format"] == "object"
+        assert copilot["needs_type"] is True
+
+    def test_install_copilot_config(self, tmp_path):
+        """install_platform_configs creates .vscode/mcp.json with 'servers' key."""
+        configured = install_platform_configs(tmp_path, target="copilot")
+        assert "GitHub Copilot" in configured
+        config_path = tmp_path / ".vscode" / "mcp.json"
+        assert config_path.exists()
+        data = json.loads(config_path.read_text())
+        assert "code-review-graph" in data["servers"]
+        entry = data["servers"]["code-review-graph"]
+        assert entry["type"] == "stdio"
+        assert "serve" in entry["args"]
+
+    def test_install_copilot_preserves_existing_servers(self, tmp_path):
+        """Existing server entries are preserved when adding code-review-graph."""
+        config_path = tmp_path / ".vscode" / "mcp.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps({"servers": {"other-server": {"command": "other"}}}),
+            encoding="utf-8",
+        )
+        install_platform_configs(tmp_path, target="copilot")
+        data = json.loads(config_path.read_text())
+        assert "other-server" in data["servers"]
+        assert "code-review-graph" in data["servers"]
+
+    def test_install_copilot_no_duplicate(self, tmp_path):
+        """Second install skips when code-review-graph already exists."""
+        install_platform_configs(tmp_path, target="copilot")
+        config_path = tmp_path / ".vscode" / "mcp.json"
+        first_content = config_path.read_text()
+        install_platform_configs(tmp_path, target="copilot")
+        second_content = config_path.read_text()
+        assert first_content == second_content
+        data = json.loads(second_content)
+        assert list(data["servers"].keys()).count("code-review-graph") == 1
+
+    def test_copilot_instructions_file_written(self, tmp_path):
+        """inject_platform_instructions creates .github/copilot-instructions.md."""
+        updated = inject_platform_instructions(tmp_path, target="copilot")
+        assert ".github/copilot-instructions.md" in updated
+        instructions = tmp_path / ".github" / "copilot-instructions.md"
+        assert instructions.exists()
+        content = instructions.read_text()
+        assert _CLAUDE_MD_SECTION_MARKER in content
+
+    def test_copilot_instructions_idempotent(self, tmp_path):
+        """Running inject twice produces identical content."""
+        inject_platform_instructions(tmp_path, target="copilot")
+        first = (tmp_path / ".github" / "copilot-instructions.md").read_text()
+        inject_platform_instructions(tmp_path, target="copilot")
+        second = (tmp_path / ".github" / "copilot-instructions.md").read_text()
+        assert first == second
+
+    def test_copilot_dry_run(self, tmp_path):
+        """dry_run=True does not create any files."""
+        configured = install_platform_configs(tmp_path, target="copilot", dry_run=True)
+        assert "GitHub Copilot" in configured
+        config_path = tmp_path / ".vscode" / "mcp.json"
+        assert not config_path.exists()
+
+    def test_copilot_writes_only_copilot_instructions(self, tmp_path):
+        """inject_platform_instructions with target='copilot' writes only copilot file."""
+        updated = inject_platform_instructions(tmp_path, target="copilot")
+        assert updated == [".github/copilot-instructions.md"]
+        assert not (tmp_path / "AGENTS.md").exists()
+        assert not (tmp_path / "GEMINI.md").exists()
+        assert not (tmp_path / ".cursorrules").exists()
+        assert not (tmp_path / ".windsurfrules").exists()
+        assert not (tmp_path / "QODER.md").exists()
+
+    def test_copilot_included_in_all_when_detected(self, tmp_path):
+        """install_platform_configs with target='all' includes Copilot when ~/.vscode exists."""
+        fake_home = tmp_path / "fakehome"
+        (fake_home / ".vscode").mkdir(parents=True)
+        with patch("code_review_graph.skills.Path.home", return_value=fake_home):
+            configured = install_platform_configs(tmp_path, target="all")
+        assert "GitHub Copilot" in configured
+        config_path = tmp_path / ".vscode" / "mcp.json"
+        assert config_path.exists()
+
+
+
     """Tests for _detect_serve_command() and its helpers."""
 
     # ------------------------------------------------------------------
