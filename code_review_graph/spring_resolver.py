@@ -72,9 +72,12 @@ def resolve_spring_di_calls(store: GraphStore) -> dict:
         return {"files_indexed": len(java_files), "calls_resolved": 0}
 
     # -----------------------------------------------------------------------
-    # Build class_name → qualified_name lookup from nodes
-    # Used to resolve bare type names (e.g. "InvoiceCalculationService") to
-    # their full qualified form in the graph.
+    # Build class_name → qualified_name lookup from nodes.
+    # Keyed by bare class name; value is the full "file_path::ClassName" form
+    # that callers_of uses for its target_qualified exact-match lookup.
+    # When a name appears in multiple files (e.g. same interface in several
+    # services), we keep the entry with the shortest path as a tiebreaker —
+    # this is overridden by the concrete-implementation lookup below.
     # -----------------------------------------------------------------------
     name_to_qual: dict[str, str] = {}
     for row in conn.execute(
@@ -82,9 +85,17 @@ def resolve_spring_di_calls(store: GraphStore) -> dict:
     ).fetchall():
         bare = row["name"]
         qual = row["qualified_name"]
-        # Prefer shorter/simpler qualified names when there are duplicates
         if bare not in name_to_qual or len(qual) < len(name_to_qual[bare]):
             name_to_qual[bare] = qual
+
+    # Also index Function nodes so we can build "file::Class.method" targets.
+    # key: (class_name, method_name) → full qualified_name of the method node
+    method_to_qual: dict[tuple[str, str], str] = {}
+    for row in conn.execute(
+        "SELECT name, qualified_name, parent_name FROM nodes "
+        "WHERE kind IN ('Function', 'Test') AND language = 'java' AND parent_name IS NOT NULL"
+    ).fetchall():
+        method_to_qual[(row["parent_name"], row["name"])] = row["qualified_name"]
 
     # -----------------------------------------------------------------------
     # Build implementors: bare interface name → list of implementing class quals
@@ -96,7 +107,6 @@ def resolve_spring_di_calls(store: GraphStore) -> dict:
     ).fetchall():
         iface = row["target_qualified"]
         impl = row["source_qualified"]
-        # Only track Java implementations
         if any(impl.startswith(f) for f in java_files) or "::" in impl:
             implementors.setdefault(iface, []).append(impl)
 
@@ -160,13 +170,11 @@ def resolve_spring_di_calls(store: GraphStore) -> dict:
         # Resolve to concrete implementation if unique
         impls = implementors.get(injected_type, [])
         if len(impls) == 1:
-            concrete_qual = impls[0]
-            # Rewrite target to "ConcreteClass.method_name"
-            concrete_bare = concrete_qual.split("::")[-1]
-            new_target = f"{concrete_bare}.{method_name}"
+            concrete_class = impls[0].split("::")[-1]
+            new_target = method_to_qual.get((concrete_class, method_name)) or f"{impls[0]}.{method_name}"
         else:
-            # Resolve to interface type
-            new_target = f"{injected_type}.{method_name}"
+            type_bare = injected_type.split(".")[-1] if "." in injected_type else injected_type
+            new_target = method_to_qual.get((type_bare, method_name)) or f"{injected_type}.{method_name}"
 
         extra["spring_resolved"] = True
         extra["injected_type"] = injected_type
