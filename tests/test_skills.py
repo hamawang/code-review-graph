@@ -331,11 +331,19 @@ class TestInjectClaudeMd:
 class TestInjectPlatformInstructionsFiltering:
     def test_all_writes_every_file(self, tmp_path):
         updated = inject_platform_instructions(tmp_path, target="all")
-        assert set(updated) == {"AGENTS.md", "GEMINI.md", ".cursorrules", ".windsurfrules", "QODER.md", ".kiro/steering/code-review-graph.md", ".github/copilot-instructions.md"}
+        assert set(updated) == {
+            "AGENTS.md", "GEMINI.md", ".cursorrules", ".windsurfrules",
+            "QODER.md", ".kiro/steering/code-review-graph.md",
+            ".github/code-review-graph.instruction.md",
+        }
 
     def test_default_is_all(self, tmp_path):
         updated = inject_platform_instructions(tmp_path)
-        assert set(updated) == {"AGENTS.md", "GEMINI.md", ".cursorrules", ".windsurfrules", "QODER.md", ".kiro/steering/code-review-graph.md", ".github/copilot-instructions.md"}
+        assert set(updated) == {
+            "AGENTS.md", "GEMINI.md", ".cursorrules", ".windsurfrules",
+            "QODER.md", ".kiro/steering/code-review-graph.md",
+            ".github/code-review-graph.instruction.md",
+        }
 
     def test_claude_writes_nothing(self, tmp_path):
         updated = inject_platform_instructions(tmp_path, target="claude")
@@ -345,6 +353,7 @@ class TestInjectPlatformInstructionsFiltering:
         assert not (tmp_path / ".cursorrules").exists()
         assert not (tmp_path / ".windsurfrules").exists()
         assert not (tmp_path / "QODER.md").exists()
+        assert not (tmp_path / ".github" / "code-review-graph.instruction.md").exists()
 
     def test_cursor_writes_only_cursor_files(self, tmp_path):
         updated = inject_platform_instructions(tmp_path, target="cursor")
@@ -1039,10 +1048,10 @@ class TestCopilotPlatform:
         assert list(data["servers"].keys()).count("code-review-graph") == 1
 
     def test_copilot_instructions_file_written(self, tmp_path):
-        """inject_platform_instructions creates .github/copilot-instructions.md."""
+        """inject_platform_instructions creates .github/code-review-graph.instruction.md."""
         updated = inject_platform_instructions(tmp_path, target="copilot")
-        assert ".github/copilot-instructions.md" in updated
-        instructions = tmp_path / ".github" / "copilot-instructions.md"
+        assert ".github/code-review-graph.instruction.md" in updated
+        instructions = tmp_path / ".github" / "code-review-graph.instruction.md"
         assert instructions.exists()
         content = instructions.read_text()
         assert _CLAUDE_MD_SECTION_MARKER in content
@@ -1050,9 +1059,9 @@ class TestCopilotPlatform:
     def test_copilot_instructions_idempotent(self, tmp_path):
         """Running inject twice produces identical content."""
         inject_platform_instructions(tmp_path, target="copilot")
-        first = (tmp_path / ".github" / "copilot-instructions.md").read_text()
+        first = (tmp_path / ".github" / "code-review-graph.instruction.md").read_text()
         inject_platform_instructions(tmp_path, target="copilot")
-        second = (tmp_path / ".github" / "copilot-instructions.md").read_text()
+        second = (tmp_path / ".github" / "code-review-graph.instruction.md").read_text()
         assert first == second
 
     def test_copilot_dry_run(self, tmp_path):
@@ -1065,7 +1074,7 @@ class TestCopilotPlatform:
     def test_copilot_writes_only_copilot_instructions(self, tmp_path):
         """inject_platform_instructions with target='copilot' writes only copilot file."""
         updated = inject_platform_instructions(tmp_path, target="copilot")
-        assert updated == [".github/copilot-instructions.md"]
+        assert updated == [".github/code-review-graph.instruction.md"]
         assert not (tmp_path / "AGENTS.md").exists()
         assert not (tmp_path / "GEMINI.md").exists()
         assert not (tmp_path / ".cursorrules").exists()
@@ -1083,7 +1092,77 @@ class TestCopilotPlatform:
         assert config_path.exists()
 
 
+class TestCopilotCLIPlatform:
+    """Tests for GitHub Copilot CLI platform support."""
 
+    def test_copilot_cli_platform_entry_exists(self):
+        """PLATFORMS dict has a 'copilot-cli' key with correct metadata."""
+        assert "copilot-cli" in PLATFORMS
+        copilot_cli = PLATFORMS["copilot-cli"]
+        assert copilot_cli["name"] == "GitHub Copilot CLI"
+        assert copilot_cli["key"] == "servers"
+        assert copilot_cli["format"] == "object"
+        assert copilot_cli["needs_type"] is True
+
+    def test_install_copilot_cli_config(self, tmp_path):
+        """install_platform_configs creates ~/.copilot/mcp-config.json with 'servers' key."""
+        fake_home = tmp_path / "fakehome"
+        (fake_home / ".copilot").mkdir(parents=True)
+        config_path = fake_home / ".copilot" / "mcp-config.json"
+        with patch.dict(
+            PLATFORMS,
+            {
+                "copilot-cli": {
+                    **PLATFORMS["copilot-cli"],
+                    "config_path": lambda root: config_path,
+                    "detect": lambda: True,
+                },
+            },
+        ):
+            configured = install_platform_configs(tmp_path, target="copilot-cli")
+        assert "GitHub Copilot CLI" in configured
+        assert config_path.exists()
+        data = json.loads(config_path.read_text())
+        assert "code-review-graph" in data["servers"]
+        entry = data["servers"]["code-review-graph"]
+        assert entry["type"] == "stdio"
+        assert "serve" in entry["args"]
+
+    def test_install_copilot_cli_preserves_existing_servers(self, tmp_path):
+        """Existing server entries are preserved when adding code-review-graph."""
+        fake_home = tmp_path / "fakehome"
+        config_path = fake_home / ".copilot" / "mcp-config.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps({"servers": {"other-server": {"command": "other"}}}),
+            encoding="utf-8",
+        )
+        with patch.dict(
+            PLATFORMS,
+            {
+                "copilot-cli": {
+                    **PLATFORMS["copilot-cli"],
+                    "config_path": lambda root: config_path,
+                    "detect": lambda: True,
+                },
+            },
+        ):
+            install_platform_configs(tmp_path, target="copilot-cli")
+        data = json.loads(config_path.read_text())
+        assert "other-server" in data["servers"]
+        assert "code-review-graph" in data["servers"]
+
+    def test_copilot_cli_writes_only_copilot_instructions(self, tmp_path):
+        """inject_platform_instructions with target='copilot-cli' writes .github/code-review-graph.instruction.md."""
+        updated = inject_platform_instructions(tmp_path, target="copilot-cli")
+        assert ".github/code-review-graph.instruction.md" in updated
+        instructions = tmp_path / ".github" / "code-review-graph.instruction.md"
+        assert instructions.exists()
+        content = instructions.read_text()
+        assert _CLAUDE_MD_SECTION_MARKER in content
+
+
+class TestDetectServeCommand:
     """Tests for _detect_serve_command() and its helpers."""
 
     # ------------------------------------------------------------------
