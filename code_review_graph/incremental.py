@@ -36,6 +36,30 @@ def _run_rescript_resolver(store: GraphStore) -> Optional[dict]:
         logger.warning("ReScript cross-module resolver failed: %s", exc)
         return None
 
+
+def _run_spring_resolver(store: GraphStore) -> Optional[dict]:
+    """Run the Spring DI call resolver, swallowing any failure so
+    build never fails because of it. Returns stats or None on error.
+    """
+    try:
+        from .spring_resolver import resolve_spring_di_calls
+        return resolve_spring_di_calls(store)
+    except Exception as exc:  # noqa: BLE001 - best-effort post-pass
+        logger.warning("Spring DI resolver failed: %s", exc)
+        return None
+
+
+def _run_temporal_resolver(store: GraphStore) -> Optional[dict]:
+    """Run the Temporal workflow/activity call resolver, swallowing any failure so
+    build never fails because of it. Returns stats or None on error.
+    """
+    try:
+        from .temporal_resolver import resolve_temporal_calls
+        return resolve_temporal_calls(store)
+    except Exception as exc:  # noqa: BLE001 - best-effort post-pass
+        logger.warning("Temporal resolver failed: %s", exc)
+        return None
+
 # Default ignore patterns (in addition to .gitignore).
 #
 # `<dir>/**` patterns are matched at any depth by _should_ignore, so
@@ -174,26 +198,11 @@ def find_project_root(
     return start or Path.cwd()
 
 
-def get_data_dir(repo_root: Path) -> Path:
-    """Return the directory where this project's graph data lives.
-
-    By default, ``<repo_root>/.code-review-graph``. If the
-    ``CRG_DATA_DIR`` environment variable is set, it is used verbatim
-    instead — letting you keep graphs outside the working tree (useful
-    for ephemeral workspaces, Docker volumes, or shared caches). See: #155
-
-    The directory is created if it does not already exist; an inner
-    ``.gitignore`` (with ``*``) is written so any accidentally-nested
-    files never get committed. Both are idempotent.
+def _write_data_dir_gitignore(data_dir: Path) -> None:
+    """Write .gitignore file in data directory if it doesn't exist.
+    
+    The gitignore contains a single '*' to prevent accidental commits.
     """
-    env_override = os.environ.get("CRG_DATA_DIR", "").strip()
-    if env_override:
-        data_dir = Path(env_override).expanduser().resolve()
-    else:
-        data_dir = repo_root / ".code-review-graph"
-
-    data_dir.mkdir(parents=True, exist_ok=True)
-
     inner_gitignore = data_dir / ".gitignore"
     if not inner_gitignore.exists():
         try:
@@ -211,6 +220,47 @@ def get_data_dir(repo_root: Path) -> Path:
         except OSError:
             # Data dir might be read-only (rare); that's OK, it's a best-effort guard.
             pass
+
+
+def get_data_dir(repo_root: Path) -> Path:
+    """Return the directory where this project's graph data lives.
+
+    Resolution priority:
+    1. Registry entry for this repo (set via --data-dir)
+    2. CRG_DATA_DIR environment variable (global override)
+    3. Default: <repo>/.code-review-graph/
+
+    By default, ``<repo_root>/.code-review-graph``. If the
+    ``CRG_DATA_DIR`` environment variable is set, it is used verbatim
+    instead — letting you keep graphs outside the working tree (useful
+    for ephemeral workspaces, Docker volumes, or shared caches). See: #155
+
+    The directory is created if it does not already exist; an inner
+    ``.gitignore`` (with ``*``) is written so any accidentally-nested
+    files never get committed. Both are idempotent.
+    """
+    # Check registry first
+    try:
+        from .registry import Registry
+        registry_data_dir = Registry().get_data_dir_for_repo(str(repo_root))
+        if registry_data_dir:
+            data_dir = Path(registry_data_dir).resolve()
+            data_dir.mkdir(parents=True, exist_ok=True)
+            _write_data_dir_gitignore(data_dir)
+            return data_dir
+    except Exception as exc:
+        # If registry lookup fails, log and fall through to other methods
+        logger.debug("Registry lookup failed for %s: %s", repo_root, exc)
+
+    # Check environment variable
+    env_override = os.environ.get("CRG_DATA_DIR", "").strip()
+    if env_override:
+        data_dir = Path(env_override).expanduser().resolve()
+    else:
+        data_dir = repo_root / ".code-review-graph"
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    _write_data_dir_gitignore(data_dir)
 
     return data_dir
 
@@ -333,9 +383,10 @@ def _git_branch_info(repo_root: Path) -> tuple[str, str]:
         result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8',
             cwd=str(repo_root),
             timeout=_GIT_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode == 0:
             branch = result.stdout.strip()
@@ -345,9 +396,10 @@ def _git_branch_info(repo_root: Path) -> tuple[str, str]:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8',
             cwd=str(repo_root),
             timeout=_GIT_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode == 0:
             sha = result.stdout.strip()
@@ -365,6 +417,7 @@ def _svn_revision_info(repo_root: Path) -> tuple[str, str]:
             ["svn", "info", "--non-interactive"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             cwd=str(repo_root), timeout=_GIT_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode == 0:
             for line in result.stdout.splitlines():
@@ -424,18 +477,20 @@ def get_changed_files(repo_root: Path, base: str = "HEAD~1") -> list[str]:
         result = subprocess.run(
             ["git", "diff", "--name-only", base, "--"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8',
             cwd=str(repo_root),
             timeout=_GIT_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
             # Fallback: try diff against empty tree (initial commit)
             result = subprocess.run(
                 ["git", "diff", "--name-only", "--cached"],
                 capture_output=True,
-                text=True,
+                text=True, encoding='utf-8',
                 cwd=str(repo_root),
                 timeout=_GIT_TIMEOUT,
+                stdin=subprocess.DEVNULL,
             )
         files = [f.strip() for f in result.stdout.splitlines() if f.strip()]
         return files
@@ -456,6 +511,7 @@ def _get_svn_changed_files(repo_root: Path, rev_range: str | None = None) -> lis
                 ["svn", "diff", "--summarize", "--non-interactive", "-r", rev_range],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 cwd=str(repo_root), timeout=_GIT_TIMEOUT,
+                stdin=subprocess.DEVNULL,
             )
             if result.returncode != 0:
                 logger.warning("svn diff --summarize failed (rc=%d): %s",
@@ -472,6 +528,7 @@ def _get_svn_changed_files(repo_root: Path, rev_range: str | None = None) -> lis
                 ["svn", "status", "--non-interactive"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                 cwd=str(repo_root), timeout=_GIT_TIMEOUT,
+                stdin=subprocess.DEVNULL,
             )
             files = []
             for line in result.stdout.splitlines():
@@ -496,9 +553,10 @@ def get_staged_and_unstaged(repo_root: Path) -> list[str]:
         result = subprocess.run(
             ["git", "status", "--porcelain"],
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8',
             cwd=str(repo_root),
             timeout=_GIT_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
         files = []
         for line in result.stdout.splitlines():
@@ -541,9 +599,10 @@ def get_all_tracked_files(
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8',
             cwd=str(repo_root),
             timeout=_GIT_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
         return [f.strip() for f in result.stdout.splitlines() if f.strip()]
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -561,6 +620,7 @@ def _get_svn_all_tracked_files(repo_root: Path) -> list[str]:
             ["svn", "list", "--recursive", "--non-interactive"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             cwd=str(repo_root), timeout=60,  # svn list queries the server
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode == 0:
             # svn list returns paths relative to the WC URL; directories end with "/"
@@ -805,6 +865,8 @@ def full_build(
     store.commit()
 
     rescript_stats = _run_rescript_resolver(store)
+    spring_stats = _run_spring_resolver(store)
+    temporal_stats = _run_temporal_resolver(store)
 
     return {
         "files_parsed": len(files),
@@ -812,6 +874,8 @@ def full_build(
         "total_edges": total_edges,
         "errors": errors,
         "rescript_resolution": rescript_stats,
+        "spring_resolution": spring_stats,
+        "temporal_resolution": temporal_stats,
     }
 
 
@@ -931,14 +995,17 @@ def incremental_update(
     _store_vcs_metadata(repo_root, store)
     store.commit()
 
-    # Only re-run ReScript resolver when changed files touched .res/.resi;
-    # otherwise prior resolution state is unaffected.
+    # Only re-run language-specific resolvers when the relevant files changed.
     rescript_changed = any(
         rp.endswith((".res", ".resi")) for rp in all_files
     )
     rescript_stats = (
         _run_rescript_resolver(store) if rescript_changed else None
     )
+
+    spring_changed = any(rp.endswith(".java") for rp in all_files)
+    spring_stats = _run_spring_resolver(store) if spring_changed else None
+    temporal_stats = _run_temporal_resolver(store) if spring_changed else None
 
     return {
         "files_updated": len(all_files),
@@ -948,6 +1015,8 @@ def incremental_update(
         "dependent_files": list(dependent_files),
         "errors": errors,
         "rescript_resolution": rescript_stats,
+        "spring_resolution": spring_stats,
+        "temporal_resolution": temporal_stats,
     }
 
 
@@ -1101,3 +1170,29 @@ def watch(
         observer.stop()
     observer.join()
     logger.info("Watch stopped.")
+
+
+def start_watch_thread(
+    repo_root: Path,
+    store: GraphStore,
+    daemon: bool = True,
+) -> threading.Thread | None:
+    """Start watch mode in a background thread.
+
+    Returns the started thread, or None if watchdog is unavailable.
+    """
+    try:
+        import watchdog  # noqa: F401
+    except ImportError:
+        logger.warning("watchdog not installed; auto-watch disabled")
+        return None
+
+    thread = threading.Thread(
+        target=watch,
+        args=(repo_root, store),
+        daemon=daemon,
+        name="crg-watch",
+    )
+    thread.start()
+    logger.info("Auto-watch started for %s", repo_root)
+    return thread

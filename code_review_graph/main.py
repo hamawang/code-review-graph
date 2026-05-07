@@ -9,7 +9,9 @@ by default).
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
+from pathlib import Path
 from typing import Optional
 
 from fastmcp import FastMCP
@@ -54,6 +56,11 @@ from .tools import (
     semantic_search_nodes,
 )
 
+from .graph import GraphStore
+from .incremental import find_project_root, get_db_path, start_watch_thread
+
+logger = logging.getLogger(__name__)
+
 # NOTE: Thread-safe for stdio MCP (single-threaded). If adding HTTP/SSE
 # transport with concurrent requests, replace with contextvars.ContextVar.
 _default_repo_root: str | None = None
@@ -68,9 +75,9 @@ def _resolve_repo_root(repo_root: Optional[str]) -> Optional[str]:
        (captured in ``_default_repo_root``).
     3. None — the underlying impl will fall back to the server's cwd.
 
-    Previously, only ``get_docs_section_tool`` consulted ``_default_repo_root``,
-    so ``serve --repo <X>`` had no effect for the other 21 tools. See: #222
-    follow-up.
+    All MCP tools that accept ``repo_root`` should use this helper so
+    ``serve --repo <X>`` applies consistently, including
+    ``get_docs_section_tool``. See: #222.
     """
     return repo_root if repo_root else _default_repo_root
 
@@ -378,7 +385,10 @@ def get_docs_section_tool(
         section_name: The section to retrieve (e.g. "review-delta", "usage").
         repo_root: Repository root path. Auto-detected if omitted.
     """
-    return get_docs_section(section_name=section_name, repo_root=repo_root)
+    return get_docs_section(
+        section_name=section_name,
+        repo_root=_resolve_repo_root(repo_root),
+    )
 
 
 @mcp.tool()
@@ -952,6 +962,7 @@ def _apply_tool_filter(tools: str | None = None) -> None:
 def main(
     repo_root: str | None = None,
     tools: str | None = None,
+    auto_watch: bool = False,
     *,
     transport: str = "stdio",
     host: str | None = None,
@@ -972,26 +983,41 @@ def main(
         tools: Comma-separated list of tool names to expose.
             Falls back to ``CRG_TOOLS`` env var.  When unset, all
             tools are available.
+        auto_watch: Start filesystem watcher in a background daemon thread
+            while the MCP server runs.
         transport: ``"stdio"`` (default) or ``"streamable-http"`` for local HTTP.
         host: Bind address when using HTTP (required for HTTP; set by CLI).
         port: Port when using HTTP (required for HTTP; set by CLI).
     """
     global _default_repo_root
-    _default_repo_root = repo_root
+    root = Path(repo_root) if repo_root else find_project_root()
+    _default_repo_root = str(root)
     _apply_tool_filter(tools)
+
+    watch_store: GraphStore | None = None
+    if auto_watch:
+        watch_store = GraphStore(get_db_path(root))
+        thread = start_watch_thread(root, watch_store, daemon=True)
+        if thread is None:
+            logger.warning("Auto-watch was requested but could not be started")
+
     if sys.platform == "win32":
-        import asyncio
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    if transport == "stdio":
-        # Stdio MCP must keep stdout strictly JSON-RPC. FastMCP's banner/update
-        # notices corrupt the handshake stream on clients like Codex CLI.
-        mcp.run(transport="stdio", show_banner=False)
-    elif transport == "streamable-http":
-        if host is None or port is None:
-            raise ValueError("streamable-http transport requires host and port")
-        mcp.run(transport="streamable-http", host=host, port=port)
-    else:
-        raise ValueError(f"unsupported transport: {transport!r}")
+
+    try:
+        if transport == "stdio":
+            # Stdio MCP must keep stdout strictly JSON-RPC. FastMCP's banner/update
+            # notices corrupt the handshake stream on clients like Codex CLI.
+            mcp.run(transport="stdio", show_banner=False)
+        elif transport == "streamable-http":
+            if host is None or port is None:
+                raise ValueError("streamable-http transport requires host and port")
+            mcp.run(transport="streamable-http", host=host, port=port)
+        else:
+            raise ValueError(f"unsupported transport: {transport!r}")
+    finally:
+        if watch_store is not None:
+            watch_store.close()
 
 
 if __name__ == "__main__":
