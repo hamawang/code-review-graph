@@ -777,7 +777,6 @@ class TestCodeParser:
 
 
     def test_non_test_file_describe_not_special(self):
-    def test_non_test_file_describe_not_special(self):
         """describe() in a non-test file should NOT create Test nodes."""
         import tempfile
         code = (
@@ -1379,6 +1378,7 @@ ExtensionID PlaybackExtension::ID() const { return {}; }
             "deep",
             "ID",
         ]
+
 
 
 class TestCppScopedFunctionName:
