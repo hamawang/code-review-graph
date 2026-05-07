@@ -1381,6 +1381,7 @@ ExtensionID PlaybackExtension::ID() const { return {}; }
 
 
 
+
 class TestCppScopedFunctionName:
     """Regression tests for C++ scoped function name extraction.
 
