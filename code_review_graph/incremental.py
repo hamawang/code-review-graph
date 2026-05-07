@@ -36,6 +36,30 @@ def _run_rescript_resolver(store: GraphStore) -> Optional[dict]:
         logger.warning("ReScript cross-module resolver failed: %s", exc)
         return None
 
+
+def _run_spring_resolver(store: GraphStore) -> Optional[dict]:
+    """Run the Spring DI call resolver, swallowing any failure so
+    build never fails because of it. Returns stats or None on error.
+    """
+    try:
+        from .spring_resolver import resolve_spring_di_calls
+        return resolve_spring_di_calls(store)
+    except Exception as exc:  # noqa: BLE001 - best-effort post-pass
+        logger.warning("Spring DI resolver failed: %s", exc)
+        return None
+
+
+def _run_temporal_resolver(store: GraphStore) -> Optional[dict]:
+    """Run the Temporal workflow/activity call resolver, swallowing any failure so
+    build never fails because of it. Returns stats or None on error.
+    """
+    try:
+        from .temporal_resolver import resolve_temporal_calls
+        return resolve_temporal_calls(store)
+    except Exception as exc:  # noqa: BLE001 - best-effort post-pass
+        logger.warning("Temporal resolver failed: %s", exc)
+        return None
+
 # Default ignore patterns (in addition to .gitignore).
 #
 # `<dir>/**` patterns are matched at any depth by _should_ignore, so
@@ -815,6 +839,8 @@ def full_build(
     store.commit()
 
     rescript_stats = _run_rescript_resolver(store)
+    spring_stats = _run_spring_resolver(store)
+    temporal_stats = _run_temporal_resolver(store)
 
     return {
         "files_parsed": len(files),
@@ -822,6 +848,8 @@ def full_build(
         "total_edges": total_edges,
         "errors": errors,
         "rescript_resolution": rescript_stats,
+        "spring_resolution": spring_stats,
+        "temporal_resolution": temporal_stats,
     }
 
 
@@ -941,14 +969,17 @@ def incremental_update(
     _store_vcs_metadata(repo_root, store)
     store.commit()
 
-    # Only re-run ReScript resolver when changed files touched .res/.resi;
-    # otherwise prior resolution state is unaffected.
+    # Only re-run language-specific resolvers when the relevant files changed.
     rescript_changed = any(
         rp.endswith((".res", ".resi")) for rp in all_files
     )
     rescript_stats = (
         _run_rescript_resolver(store) if rescript_changed else None
     )
+
+    spring_changed = any(rp.endswith(".java") for rp in all_files)
+    spring_stats = _run_spring_resolver(store) if spring_changed else None
+    temporal_stats = _run_temporal_resolver(store) if spring_changed else None
 
     return {
         "files_updated": len(all_files),
@@ -958,6 +989,8 @@ def incremental_update(
         "dependent_files": list(dependent_files),
         "errors": errors,
         "rescript_resolution": rescript_stats,
+        "spring_resolution": spring_stats,
+        "temporal_resolution": temporal_stats,
     }
 
 
