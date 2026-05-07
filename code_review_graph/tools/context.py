@@ -18,7 +18,7 @@ def _has_git_changes(root: Path, base: str) -> bool:
     try:
         result = subprocess.run(
             ["git", "diff", "--name-only", base, "--"],
-            capture_output=True, text=True,
+            capture_output=True, stdin=subprocess.DEVNULL, text=True,
             cwd=str(root), timeout=10,
             stdin=subprocess.DEVNULL,
         )
@@ -27,7 +27,7 @@ def _has_git_changes(root: Path, base: str) -> bool:
         # Also check staged/unstaged
         result2 = subprocess.run(
             ["git", "status", "--porcelain"],
-            capture_output=True, text=True,
+            capture_output=True, stdin=subprocess.DEVNULL, text=True,
             cwd=str(root), timeout=10,
             stdin=subprocess.DEVNULL,
         )

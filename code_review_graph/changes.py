@@ -51,6 +51,7 @@ def parse_git_diff_ranges(
         result = subprocess.run(
             ["git", "diff", "--unified=0", base, "--"],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -93,6 +94,7 @@ def parse_svn_diff_ranges(
         result = subprocess.run(
             cmd,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",

@@ -1942,6 +1942,85 @@ class TestRescriptCrossModuleResolver:
         assert second["imports_resolved"] == 0
 
 
+class TestNixParsing:
+    """Flake-aware Nix parser — see the Nix language-support epic."""
+
+    def setup_method(self):
+        self.parser = CodeParser()
+        # Parse the flake-shaped fixture as if its basename were ``flake.nix``
+        # so the ``inputs.*.url`` branch of _extract_nix_constructs fires.
+        flake_bytes = (FIXTURES / "sample.nix").read_bytes()
+        self.flake_path = FIXTURES / "flake.nix"
+        self.flake_nodes, self.flake_edges = self.parser.parse_bytes(
+            self.flake_path, flake_bytes,
+        )
+        # The non-flake fixture retains its actual path; it's used to verify
+        # the flake-input branch does *not* fire on non-flake files.
+        module_path = FIXTURES / "sample_module.nix"
+        self.module_nodes, self.module_edges = self.parser.parse_file(module_path)
+
+    def test_detects_language(self):
+        assert self.parser.detect_language(Path("flake.nix")) == "nix"
+        assert self.parser.detect_language(Path("modules/foo.nix")) == "nix"
+
+    def test_nodes_have_nix_language(self):
+        for n in self.flake_nodes:
+            assert n.language == "nix"
+        for n in self.module_nodes:
+            assert n.language == "nix"
+
+    def test_top_level_bindings_become_functions(self):
+        funcs = {n.name for n in self.flake_nodes if n.kind == "Function"}
+        # Top-level bindings from sample.nix (flake-shaped).
+        assert "description" in funcs
+        assert "inputs" in funcs
+        assert "outputs" in funcs
+        # Nested bindings flattened to dotted names.
+        assert "packages.default" in funcs
+        assert "devShells.default" in funcs
+
+    def test_flake_inputs_produce_import_edges(self):
+        targets = {
+            e.target for e in self.flake_edges if e.kind == "IMPORTS_FROM"
+        }
+        assert "github:NixOS/nixpkgs/nixos-unstable" in targets
+        assert "github:numtide/flake-utils" in targets
+
+    def test_import_and_callpackage_produce_import_edges(self):
+        targets = {
+            e.target for e in self.flake_edges if e.kind == "IMPORTS_FROM"
+        }
+        # callPackage ./default.nix and import ./shell.nix. Relative paths
+        # are resolved against the caller's directory when possible; since
+        # neither file exists alongside the fixture, the raw relative
+        # path is preserved.
+        assert "./default.nix" in targets
+        assert "./shell.nix" in targets
+
+    def test_non_flake_file_has_no_input_edges(self):
+        # ``sample_module.nix`` is not named ``flake.nix``, so the
+        # inputs.*.url branch must not fire — no github:-prefixed targets.
+        targets = [
+            e.target for e in self.module_edges if e.kind == "IMPORTS_FROM"
+        ]
+        assert not any(t.startswith("github:") for t in targets)
+        # The import ./foo.nix inside the `let` body still produces an edge.
+        assert any("foo.nix" in t for t in targets)
+
+    def test_contains_edges_wire_file_to_top_level_bindings(self):
+        file_path = str(self.flake_path)
+        contains_targets = {
+            e.target for e in self.flake_edges
+            if e.kind == "CONTAINS" and e.source == file_path
+        }
+        # Each top-level binding should be CONTAINS-linked from the file.
+        for name in ("description", "inputs", "outputs"):
+            qualified = f"{file_path}::{name}"
+            assert qualified in contains_targets, (
+                f"missing CONTAINS edge for {qualified}"
+            )
+
+
 class TestSpringDIParsing:
     """Tests for Spring DI annotation detection and INJECTS edge generation."""
 
@@ -2317,3 +2396,80 @@ class TestKafkaParsing:
         kafka = [e for e in self.edges if e.kind in ("CONSUMES", "PRODUCES")]
         bare_sources = {e.source.split("::")[-1].split(".")[0] for e in kafka}
         assert "OrderEvent" not in bare_sources
+
+
+# ---------------------------------------------------------------------------
+# Verilog / SystemVerilog
+# ---------------------------------------------------------------------------
+
+
+def _has_verilog_parser():
+    try:
+        import tree_sitter_language_pack as tslp
+        tslp.get_parser("verilog")
+        return True
+    except (LookupError, ImportError):
+        return False
+
+
+@pytest.mark.skipif(not _has_verilog_parser(), reason="verilog tree-sitter grammar not installed")
+class TestVerilogParsing:
+    def setup_method(self):
+        self.parser = CodeParser()
+        self.nodes, self.edges = self.parser.parse_file(FIXTURES / "sample.sv")
+
+    def test_detects_language(self):
+        assert self.parser.detect_language(Path("top.sv")) == "verilog"
+        assert self.parser.detect_language(Path("pkg.svh")) == "verilog"
+        assert self.parser.detect_language(Path("cpu.v")) == "verilog"
+        assert self.parser.detect_language(Path("header.vh")) == "verilog"
+
+    def test_finds_modules(self):
+        classes = [n for n in self.nodes if n.kind == "Class"]
+        names = {c.name for c in classes}
+        assert "FIFOController" in names
+        assert "Adder" in names
+
+    def test_finds_interfaces(self):
+        classes = [n for n in self.nodes if n.kind == "Class"]
+        names = {c.name for c in classes}
+        assert "BusIf" in names
+
+    def test_finds_tasks(self):
+        funcs = [n for n in self.nodes if n.kind == "Function"]
+        names = {f.name for f in funcs}
+        assert "do_write" in names
+
+    def test_finds_functions_in_module(self):
+        funcs = [n for n in self.nodes if n.kind == "Function"]
+        names = {f.name for f in funcs}
+        assert "is_full" in names
+
+    def test_task_and_function_parent_is_module(self):
+        funcs = {f.name: f for f in self.nodes if f.kind == "Function"}
+        assert funcs["do_write"].parent_name == "FIFOController"
+        assert funcs["is_full"].parent_name == "FIFOController"
+
+    def test_finds_package_imports(self):
+        imports = [e for e in self.edges if e.kind == "IMPORTS_FROM"]
+        targets = {e.target for e in imports}
+        assert "utils_pkg" in targets
+        assert "arith_pkg" in targets
+
+    def test_module_instantiation_creates_call_edge(self):
+        calls = [e for e in self.edges if e.kind == "CALLS"]
+        targets = {e.target for e in calls}
+        assert any("Adder" in t for t in targets)
+
+    def test_module_instantiation_caller_is_enclosing_module(self):
+        # module_instantiation CALLS must be attributed to the containing
+        # module, not a function — Verilog-specific fallback in _extract_calls.
+        calls = [e for e in self.edges if e.kind == "CALLS"]
+        adder_calls = [e for e in calls if "Adder" in e.target]
+        assert adder_calls, "Expected a CALLS edge for Adder instantiation"
+        assert any("FIFOController" in e.source for e in adder_calls)
+
+    def test_file_node_language(self):
+        file_nodes = [n for n in self.nodes if n.kind == "File"]
+        assert len(file_nodes) == 1
+        assert file_nodes[0].language == "verilog"
